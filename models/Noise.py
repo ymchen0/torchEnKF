@@ -48,7 +48,7 @@ class AddGaussian(nn.Module):
       if self.q_shape is None:
         X = X + self.post_process(self.q, self.param_type) * torch.randn_like(X)
       else:
-        chol = self.post_process(self.q, self.param_type) * torch.cholesky(torch.exp(self.q_shape * self.base))
+        chol = self.post_process(self.q, self.param_type) * torch.linalg.cholesky(torch.exp(self.q_shape * self.base))
         X = X + torch.randn_like(X) @ chol.t()
     elif self.param_type == "diag":
       X = X + self.post_process(self.q, self.param_type) * torch.randn_like(X) # (x_dim) * (*bs, N_ensem, x_dim)
@@ -59,7 +59,7 @@ class AddGaussian(nn.Module):
       # X = X + torch.distributions.MultivariateNormal(torch.zeros(self.x_dim, device=self.q.device), scale_tril=chol).sample(batch_shape)
     elif self.param_type == "full":
       batch_shape = X.shape[:-1]
-      chol = torch.cholesky(self.q)
+      chol = torch.linalg.cholesky(self.q)
       X = X + torch.distributions.MultivariateNormal(torch.zeros(self.x_dim, device=self.q.device), scale_tril=chol).sample(batch_shape) # (*bs, N_ensem, x_dim)
     return X
 
@@ -68,13 +68,13 @@ class AddGaussian(nn.Module):
       if self.q_shape is None:
         return self.post_process(self.q, self.param_type) * torch.eye(self.x_dim, device=self.q.device)
       else:
-        return self.post_process(self.q, self.param_type) * torch.cholesky(torch.exp(self.q_shape * self.base))
+        return self.post_process(self.q, self.param_type) * torch.linalg.cholesky(torch.exp(self.q_shape * self.base))
     elif self.param_type == "diag":
       return self.post_process(self.q, self.param_type) * torch.eye(self.x_dim, device=self.q.device)
     elif self.param_type == "tril":
       return self.post_process(self.q, self.param_type)
     elif self.param_type == "full":
-      return torch.cholesky(self.q)
+      return torch.linalg.cholesky(self.q)
 
   def full(self, X_prev=None):
     chol = self.chol()
@@ -142,7 +142,7 @@ class AddGaussianNet(nn.Module):
       # X = X + torch.distributions.MultivariateNormal(torch.zeros(self.x_dim, device=self.q.device), scale_tril=chol).sample(batch_shape)
     elif self.param_type == "full":
       batch_shape = X.shape[:-1]
-      chol = torch.cholesky(q)
+      chol = torch.linalg.cholesky(q)
       X = X + torch.distributions.MultivariateNormal(torch.zeros(self.x_dim, device=q.device), scale_tril=chol).sample(batch_shape) # (*bs, N_ensem, x_dim)
     return X
 
@@ -156,7 +156,7 @@ class AddGaussianNet(nn.Module):
     elif self.param_type == "tril":
       return self.post_process(q, self.param_type) # (*bs, N_ensem, x_dim, x_dim)
     elif self.param_type == "full":
-      return torch.cholesky(q) # (*bs, N_ensem, x_dim, x_dim)
+      return torch.linalg.cholesky(q) # (*bs, N_ensem, x_dim, x_dim)
 
   def full(self, X_prev):
     chol = self.chol(X_prev)
@@ -223,7 +223,7 @@ class AddGaussianNet_from_basenet(nn.Module):
       # X = X + torch.distributions.MultivariateNormal(torch.zeros(self.x_dim, device=self.q.device), scale_tril=chol).sample(batch_shape)
     elif self.param_type == "full":
       batch_shape = X.shape[:-1]
-      chol = torch.cholesky(q)
+      chol = torch.linalg.cholesky(q)
       X = X + torch.distributions.MultivariateNormal(torch.zeros(self.x_dim, device=q.device), scale_tril=chol).sample(batch_shape) # (*bs, N_ensem, x_dim)
     return X
 
@@ -237,7 +237,7 @@ class AddGaussianNet_from_basenet(nn.Module):
     elif self.param_type == "tril":
       return self.post_process(q, self.param_type)
     elif self.param_type == "full":
-      return torch.cholesky(q)
+      return torch.linalg.cholesky(q)
 
   def full(self, X_prev):
     chol = self.chol(X_prev)

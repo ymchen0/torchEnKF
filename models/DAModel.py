@@ -154,7 +154,7 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
       HX_m = X_m @ H.transpose(-1, -2) # (*bs, 1, y_dim)
       HC = H @ C_uu # (*bs, y_dim, x_dim)
       HCH_T = HC @ H.transpose(-1, -2) # (*bs, y_dim, y_dim)
-      HCH_TR_chol = torch.cholesky(HCH_T + noise_R) # (*bs, y_dim, y_dim), lower-tril
+      HCH_TR_chol = torch.linalg.cholesky(HCH_T + noise_R) # (*bs, y_dim, y_dim), lower-tril
       if compute_likelihood: #and j >= likelihood_warmup:
         d = torch.distributions.MultivariateNormal(HX_m.squeeze(-2), scale_tril=HCH_TR_chol) # (*bs, y_dim) and (*bs, y_dim, y_dim)
         neg_log_likelihood += d.log_prob(y_obs_j.squeeze(-2)) # (*bs)
@@ -192,7 +192,7 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
       HX_ct = HX - HX_m
       C_uw = 1/(N_ensem-1) * X_ct.transpose(-1, -2) @ HX_ct  # (*bs, x_dim, y_dim)
       C_ww = 1/(N_ensem-1) * HX_ct.transpose(-1, -2) @ HX_ct  # (*bs, y_dim, y_dim)
-      C_ww_R_chol = torch.cholesky(C_ww + noise_R) # (*bs, y_dim, y_dim), lower-tril
+      C_ww_R_chol = torch.linalg.cholesky(C_ww + noise_R) # (*bs, y_dim, y_dim), lower-tril
       pre = (obs_perturb - HX) @ torch.cholesky_inverse(C_ww_R_chol) # (*bs, N_ensem, y_dim)
       if compute_likelihood and j >= likelihood_warmup:
         d = torch.distributions.MultivariateNormal(HX_m.squeeze(-2), scale_tril=C_ww_R_chol)  # (*bs, y_dim) and (*bs, y_dim, y_dim)
@@ -264,7 +264,7 @@ def KF(ode_func, obs_func, t_obs, y_obs, init_m, init_C_param, model_Q_param, no
     HC = H @ C # (*bs, y_dim, x_dim)
     HCH_T = HC @ H.t() # (*bs, y_dim, y_dim)
     noise_R = noise_R_param.full()
-    HCH_TR_chol = torch.cholesky(HCH_T + noise_R) # (*bs, y_dim, y_dim)
+    HCH_TR_chol = torch.linalg.cholesky(HCH_T + noise_R) # (*bs, y_dim, y_dim)
     K_T = torch.cholesky_inverse(HCH_TR_chol) @ HC # (*bs, y_dim, x_dim)
     if compute_likelihood:
       d = torch.distributions.MultivariateNormal(HX.squeeze(-2), scale_tril=HCH_TR_chol)
@@ -392,14 +392,14 @@ def BootstrapPF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param,
       HX = X @ H.transpose(-1, -2) # (*bs, N_ensem, y_dim)
       HQ = H @ model_Q # (y_dim, x_dim) or (*bs, N_ensem, y_dim, x_dim)
       HQH_T = HQ @ H.transpose(-1, -2) # (y_dim, y_dim)
-      HQH_TR_chol = torch.cholesky(HQH_T + noise_R) # (y_dim, y_dim) or (*bs, N_ensem, y_dim, y_dim)
+      HQH_TR_chol = torch.linalg.cholesky(HQH_T + noise_R) # (y_dim, y_dim) or (*bs, N_ensem, y_dim, y_dim)
       K_T = torch.cholesky_inverse(HQH_TR_chol) @ HQ # (y_dim, x_dim) or (*bs, N_ensem, y_dim, x_dim)
       obs_d = torch.distributions.MultivariateNormal(torch.zeros(y_dim, device=device), scale_tril=HQH_TR_chol)
       logits = obs_d.log_prob(y_obs_j - HX) + torch.log(w) # (*bs, N_ensem)
 
       X = X + ((y_obs_j - HX).unsqueeze(-2) @ K_T).squeeze(-2) # (*bs, N_ensem, x_dim)
       C = model_Q @ (torch.eye(x_dim, device=device) - H.transpose(-1, -2) @ K_T) # (x_dim, x_dim) or (*bs, N_ensem, x_dim, x_dim)
-      C_chol = torch.cholesky(C)
+      C_chol = torch.linalg.cholesky(C)
       if len(C.shape) == 2:
         X = X + torch.distributions.MultivariateNormal(torch.zeros(x_dim, device=device), scale_tril=C_chol).sample((*bs, N_ensem)) # (*bs, N_ensem, x_dim)
       else:
