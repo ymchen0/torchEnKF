@@ -9,21 +9,6 @@ from torchdiffeq import odeint
 from tqdm.auto import tqdm
 import time
 
-class Timer(object):
-  def __init__(self, name=None):
-    if name is None:
-      self.name = 'foo'
-    else:
-      self.name = name
-
-  def __enter__(self):
-    self.tstart = time.time()
-
-  def __exit__(self, type, value, traceback):
-    if self.name is None:
-      print('[%s]' % self.name,)
-    print(f"{self.name}, Elapsed: {time.time() - self.tstart}s")
-
 def construct_Gaspari_Cohn(loc_radius, x_dim, device):
   def G(z):
     if z >= 0 and z < 1:
@@ -43,9 +28,13 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
                         ode_method='rk4', ode_options=None, adjoint=False, adjoint_method=None, adjoint_options=None, save_filter_step=True, save_intermediate_step=False, 
                         smooth_lag=0, t0=0., var_inflation=None, localization_radius=None, compute_likelihood=False, likelihood_warmup=0, linear_obs=True, time_varying_obs=False, save_first=False, simulation_type=1, tqdm=False, **ode_kwargs):
   """
+  EnKF with stochastic perturbation.
+
   Args:
-    t_obs: 1D tensor. Time points where observations are available. # (n_obs,)
-    y_obs: observed values at t_eval. # (n_obs, *bs, y_dim)
+    t_obs: 1D tensor. Time points where observations are available.  # Shape: (n_obs,)
+            Notice: This may not need to be time-uniform. By default, t0 is not included.
+    y_obs: Observed values at t_obs. # Shape: (n_obs, *bs, y_dim), where bs are arbitrary batch dimensions (can be empty)
+            Notice: Observations are assumed to have the same dimension 'y_dim' at the moment. Observation functions can be time-dependent.
     obs_func: nn.Module if time_varying_obs=False
           list(nn.Module) if time_varying_obs=True. # (n_obs, )
     N_ensem: Ensemble size.

@@ -40,7 +40,7 @@ print(f"device: {device}")
 N_ensems = 25 * 2 ** (np.arange(0, 14-2))
 n_epochs = N_ensems.shape[0]
 
-n_runs=30
+n_runs=5
 # n_epochs = x_axis.shape[0]
 
 n_metaruns = 1
@@ -234,7 +234,7 @@ axes[2].set_yscale('log')
 axes[2].set_xlabel(r"$N$")
 axes[2].set_ylabel(r"$L^2$ estimation error ($\nabla_\beta {\mathcal{L}}$)")
 
-# axes[2].legend(loc='lower left')
+plt.show()
 
 # Adjustments here
 if save:
