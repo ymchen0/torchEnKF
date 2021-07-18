@@ -25,8 +25,9 @@ def construct_Gaspari_Cohn(loc_radius, x_dim, device):
     return taper
 
 def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_Q_param, noise_R_param, device, 
-                                        init_X=None, ode_method='rk4', ode_options=None, adjoint=False, adjoint_method=None, adjoint_options=None, save_filter_step=True,
-                                        smooth_lag=0, t0=0., var_inflation=None, localization_radius=None, compute_likelihood=False, linear_obs=True, time_varying_obs=False, save_first=False, tqdm=False, **ode_kwargs):
+                    init_X=None, ode_method='rk4', ode_options=None, adjoint=False, adjoint_method=None, adjoint_options=None, save_filter_step=True,
+                    smooth_lag=0, t0=0., var_inflation=None, localization_radius=None, compute_likelihood=False, linear_obs=True, time_varying_obs=False,
+                    save_first=False, tqdm=False, **ode_kwargs):
     """
     EnKF with stochastic perturbation.
 
