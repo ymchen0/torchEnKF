@@ -24,48 +24,56 @@ def construct_Gaspari_Cohn(loc_radius, x_dim, device):
             taper[i, j] = G(dist/loc_radius)
     return taper
 
-def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_Q_param, noise_R_param, device, init_X=None, Cf_track=None, detach_every=None,
-                                                ode_method='rk4', ode_options=None, adjoint=False, adjoint_method=None, adjoint_options=None, save_filter_step=True, save_intermediate_step=False,
-                                                smooth_lag=0, t0=0., var_inflation=None, localization_radius=None, compute_likelihood=False, likelihood_warmup=0, linear_obs=True, time_varying_obs=False, save_first=False, simulation_type=1, tqdm=False, **ode_kwargs):
+def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_Q_param, noise_R_param, device, 
+                                        init_X=None, ode_method='rk4', ode_options=None, adjoint=False, adjoint_method=None, adjoint_options=None, save_filter_step=True,
+                                        smooth_lag=0, t0=0., var_inflation=None, localization_radius=None, compute_likelihood=False, linear_obs=True, time_varying_obs=False, save_first=False, tqdm=False, **ode_kwargs):
     """
     EnKF with stochastic perturbation.
 
-    Args:
-        ode_func
-        t_obs: 1D-tensor of time points where observations are available.  # Shape: (n_obs,)
-                        This may not need to be time-uniform. By default, t0 is NOT included.
-        y_obs: Observed values at t_obs. # Shape: (n_obs, *bs, y_dim), where 'bs' are arbitrary batch dimensions (can be of any shape)
-                        Observations are assumed to have the same dimension 'y_dim'. Hoever, observation model can be time-dependent.
-        obs_func: nn.Module if time_varying_obs=False
-                    list(nn.Module) if time_varying_obs=True. # (n_obs, )
-        N_ensem: Ensemble size.
-        init_m, init_C: Initial mean and covariance. # (x_dim,)  (x_dim, x_dim)
-        model_Q_param: (Additive) model error covariance. Can be regarded as additive covariance inflation # (x_dim, x_dim)
-        model_Q_type: If "scalar", then \sigma = exp(model_Q_param)
-                        If "diag", then \sigma_1,...\sigma_n = exp(model_Q_param)
-                        If "tril", then cov = LL^T, where L is lower_triangular, and diag(L) is positive, e.g., exp(...). Here model_Q_param=L
-        noise_R_param: Noise covariance. # (obs_dim, obs_dim)
-        noise_R_type: Same as above
-        ode_options: dict(step_size=...) for fixed step solvers. If None, use default time step (between observations)
-        intermediate_step: Whether to return intermediate time-steps for filter (mainly for plotting, and when bs is None). If True, expand t_obs
-        smooth_lag: How much time to 'look back' when smoothing
+    Key args:
+        ode_func (torch.nn.Module): Vector field f(t,x)
+                Tip: Wrap all parameters of interest that you want to evaluate gradient by torch.nn.Parameter()
+        obs_func (torch.nn.Module): Observation model h(x), assumed to be linear h(x) = Hx.
+                If time varying_obs==True, can take a list of torch.nn.Module's
+        t_obs (tensor): 1D-Tensor of shape (n_obs,). Time points where observations are available
+                This does NOT need to be time-uniform. By default, t0 is NOT included.
+        y_obs (tensor): Tensor of shape (n_obs, *bs, y_dim). Observed values at t_obs.
+                '*bs' can be arbitrary batch dimension (or empty).
+                Observations are assumed to have the same dimension 'y_dim'. However, observation model can be time-varying.
+        N_ensem: Number of particles.
+        init_m (tensor): Tensor of shape (x_dim, ). Mean of the initial distribution.
+        init_C (Noise.AddGaussian):  covariance of initial distribution
+        model_Q_param (Noise.AddGaussian): model error covariance
+        noise_R_param (Noise.AddGaussian): observation error covariance
+
+    Optional args:
+        init_X (tensor): Tensor of shape (*bs, N_ensem, x_dim). Initial ensemble if pre-specified.
+        ode_method: Numerical scheme for forward equation. We use 'euler' or 'rk4'. Other solvers are available. See https://github.com/rtqichen/torchdiffeq
+        ode_options: Set it to dict(step_size=...) for fixed step solvers. Adaptive solvers are also available - see the link above.
+        adjoint (bool): Whether to compute gradient via adjoint equation or direct backpropagation through the solver.
+        adjoint_method: Numerical scheme for adjoint equation if adjoint==True.
+        ode_kwargs: additional kwargs for neuralODE.
+        smooth_lag: Length of smoothing time interval.
+                This is NOT needed for AD-EnKF, but might be needed for Expectation-Maximization.
+        var_inflation: See discussion in paper. Typical value is between 1 and 1.1. None by default.
+        localization_radius: See discussion in paper. Typical value is 5. None by default.
+
+
 
     Returns:
-        X_track: Filtered states at time t_obs. # (n_obs, *bs, N_ensem, x_dim)
-        X_intermediate: If save_intermediate_step is true, returns trajectory of filtered states from t0 to t_obs[-1], with step_size given by ode_options. # (n_intermediate+1, *bs, N_ensem, x_dim)
-        neg_log_likelihood: Negative log likelihood # (*bs)
+        X (tensor): Tensor of shape (*bs, N_ensem, x_dim). Final ensemble.
+        X_track (tensor): Tensor of shape (n_obs, *bs, N_ensem, x_dim) if save_filter_step==True. Trajectories of ensemble across t_obs.
+        log_likelihood (tensor): Log likelihood estimate # (*bs)
     """
-    if save_intermediate_step and 'step_size' not in ode_options:
-        raise ValueError('Specify step size first to save intermediate steps.')
 
     ode_integrator = odeint_adjoint if adjoint else odeint
 
     x_dim = init_m.shape[0]
     y_dim = y_obs.shape[-1]
     n_obs = y_obs.shape[0]
-    bs = y_obs.shape[1:-1]  # torch.Size()
+    bs = y_obs.shape[1:-1]  
 
-    neg_log_likelihood = torch.zeros(bs, device=device) if compute_likelihood else None  # (*bs),  tensor(0.) if no batch dimension
+    log_likelihood = torch.zeros(bs, device=device) if compute_likelihood else None  # (*bs),  tensor(0.) if no batch dimension
 
     if localization_radius is not None:
         taper = construct_Gaspari_Cohn(localization_radius, x_dim, device)
@@ -76,47 +84,28 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
         X = init_C_param(init_m.expand(*bs, N_ensem, x_dim))
 
     X_track = None
-    X_intermediate = None
     if save_filter_step:
         X_track = torch.empty(n_obs+1, *bs, N_ensem, x_dim, dtype=init_m.dtype, device=device)
         X_track[0] = X.detach().clone()
-    if save_intermediate_step:
-        step_size = ode_options['step_size']
-        n_intermediate = round(((t_obs[-1] - t0) / step_size).item()) if n_obs > 0 else 0
-        X_intermediate = torch.empty(n_intermediate+1, *bs, N_ensem, x_dim, dtype=init_m.dtype, device=device)
-        X_intermediate[0] = X.detach().clone()
-        n_cur = 0
+
 
     t_cur = t0
 
     pbar = tqdm(range(n_obs), leave=False) if tqdm else range(n_obs)
     for j in pbar:
         ################ Forecast step ##################
-        X_prev = X
-        if not save_intermediate_step:
-            if adjoint:
-                _, X = ode_integrator(ode_func, X, torch.tensor([t_cur, t_obs[j]], device=device), method=ode_method, options=ode_options, adjoint_method=adjoint_method, adjoint_options=adjoint_options, **ode_kwargs)
-            else:
-                _, X = ode_integrator(ode_func, X, torch.tensor([t_cur, t_obs[j]], device=device), method=ode_method, options=ode_options, **ode_kwargs)
+        if adjoint:
+            _, X = ode_integrator(ode_func, X, torch.tensor([t_cur, t_obs[j]], device=device), method=ode_method, options=ode_options, adjoint_method=adjoint_method, adjoint_options=adjoint_options, **ode_kwargs)
         else:
-            n_intermediate_j = round(((t_obs[j] - t_cur) / step_size).item())
-            if adjoint:
-                X_intermediate_j = ode_integrator(ode_func, X, torch.linspace(t_cur, t_obs[j], n_intermediate_j+1, device=device), method=ode_method, options=ode_options, adjoint_method=adjoint_method, adjoint_options=adjoint_options)
-            else:
-                X_intermediate_j = ode_integrator(ode_func, X, torch.linspace(t_cur, t_obs[j], n_intermediate_j+1, device=device), method=ode_method, options=ode_options)
-            X_intermediate[n_cur+1:n_cur+n_intermediate_j] = X_intermediate_j[1:-1].detach().clone()
-            X = X_intermediate_j[-1]
-            n_cur += n_intermediate_j
+            _, X = ode_integrator(ode_func, X, torch.tensor([t_cur, t_obs[j]], device=device), method=ode_method, options=ode_options, **ode_kwargs)
         t_cur = t_obs[j]
 
-        # (Additive) covariance inflation
         if model_Q_param is not None:
-            X = model_Q_param(X, X_prev)
+            X = model_Q_param(X)
 
         X_m = X.mean(dim=-2).unsqueeze(-2)  # (*bs, 1, x_dim)
         X_ct = X - X_m
 
-        # (Multiplicative) covariance inflation
         if var_inflation is not None:
             X = var_inflation * (X - X_m) + X_m
 
@@ -127,75 +116,44 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
         obs_perturb = noise_R_param(y_obs_j.expand(*bs, N_ensem, y_dim))
         noise_R = noise_R_param.full()
 
-        if simulation_type == 0:
-            if Cf_track is None:
-                C_uu = 1/(N_ensem-1) * X_ct.transpose(-1, -2) @ X_ct  # (*bs, x_dim, x_dim)
-            else:
-                C_uu = Cf_track[j]
+        C_uu = 1/(N_ensem-1) * X_ct.transpose(-1, -2) @ X_ct  # (*bs, x_dim, x_dim). Note: It can be made memory-efficient by not computing this explicity. See discussion in paper.
 
-            if localization_radius is not None:
-                C_uu = taper * C_uu
-            if linear_obs:
-                H = obs_func_j.H # (y_dim, x_dim)
-            else:
-                H_vec = torch.autograd.functional.jacobian(obs_func_j, X_m.view(-1, x_dim), create_graph=False, strict=False, vectorize=True) # (bs_mul, y_dim, bs_mul, x_dim)
-                H = H_vec.diagonal(dim1=0, dim2=2).permute(2, 0, 1).view(*bs, y_dim, x_dim) # (*bs, y_dim, x_dim)   see https://discuss.pytorch.org/t/jacobian-functional-api-batch-respecting-jacobian/84571
-            HX = X @ H.transpose(-1, -2) # (*bs, N_ensem, y_dim)
-            HX_m = X_m @ H.transpose(-1, -2) # (*bs, 1, y_dim)
-            HC = H @ C_uu # (*bs, y_dim, x_dim)
-            HCH_T = HC @ H.transpose(-1, -2) # (*bs, y_dim, y_dim)
-            HCH_TR_chol = torch.linalg.cholesky(HCH_T + noise_R) # (*bs, y_dim, y_dim), lower-tril
-            if compute_likelihood: #and j >= likelihood_warmup:
-                d = torch.distributions.MultivariateNormal(HX_m.squeeze(-2), scale_tril=HCH_TR_chol) # (*bs, y_dim) and (*bs, y_dim, y_dim)
-                neg_log_likelihood += d.log_prob(y_obs_j.squeeze(-2)) # (*bs)
-                # d = torch.distributions.MultivariateNormal(torch.zeros(y_dim, device=device), scale_tril=noise_R_chol)
-                # neg_log_likelihood += -torch.log(torch.exp(d.log_prob(y_obs_j - HX)).mean(dim=-1)) # (*bs, N_ensem) -> (*bs)
-            pre = (obs_perturb - HX) @ torch.cholesky_inverse(HCH_TR_chol) # (*bs, N_ensem, y_dim)
-            X = X + pre @ HC # (*bs, N_ensem, x_dim)
+        if localization_radius is not None:
+            C_uu = taper * C_uu
 
-            if detach_every is not None and (j+1) % detach_every == 0:
-                X = X.detach()
+        if linear_obs:
+            H = obs_func_j.H # (y_dim, x_dim)
+        else: # Compute Jacobian of h evaluated at the ensemble mean
+            H_vec = torch.autograd.functional.jacobian(obs_func_j, X_m.view(-1, x_dim), create_graph=False, strict=False, vectorize=True) # (bs_mul, y_dim, bs_mul, x_dim)
+            H = H_vec.diagonal(dim1=0, dim2=2).permute(2, 0, 1).view(*bs, y_dim, x_dim) # (*bs, y_dim, x_dim)   see https://discuss.pytorch.org/t/jacobian-functional-api-batch-respecting-jacobian/84571
+        HX = X @ H.transpose(-1, -2) # (*bs, N_ensem, y_dim)
+        HX_m = X_m @ H.transpose(-1, -2) # (*bs, 1, y_dim)
+        HC = H @ C_uu # (*bs, y_dim, x_dim)
+        HCH_T = HC @ H.transpose(-1, -2) # (*bs, y_dim, y_dim)
+        HCH_TR_chol = torch.linalg.cholesky(HCH_T + noise_R) # (*bs, y_dim, y_dim), lower-tril
+        if compute_likelihood: 
+            d = torch.distributions.MultivariateNormal(HX_m.squeeze(-2), scale_tril=HCH_TR_chol) # (*bs, y_dim) and (*bs, y_dim, y_dim)
+            log_likelihood += d.log_prob(y_obs_j.squeeze(-2)) # (*bs)
+        pre = (obs_perturb - HX) @ torch.cholesky_inverse(HCH_TR_chol) # (*bs, N_ensem, y_dim)
+        X = X + pre @ HC # (*bs, N_ensem, x_dim)
 
 
-            if save_filter_step and smooth_lag > 0:
-                with torch.no_grad():
-                    t_start = torch.max(t_cur - smooth_lag, torch.tensor(t0))
-                    j_start = torch.argmax((t_obs>=t_start).type(torch.uint8)) # e.g., t_obs[5] = 0.5, t_obs[4]=0.4, smooth_lag=0.1 --> j_start = 4
-                    XS = X_track[j_start:j] # (L, *bs, N_ensem, x_dim)
-                    XS_m = XS.mean(dim=-2, keepdim=True) # (L, *bs, 1, x_dim)
-                    CSH_T = 1/(N_ensem-1) * (XS - XS_m).transpose(-1, -2) @ (HX - HX_m) # (L, *bs, x_dim, y_dim)
-                    XS = XS + pre @ CSH_T.transpose(-1, -2)
-                    # XS = XS + (obs_perturb - HX) @ torch.cholesky_solve(CSH_T.transpose(-1, -2), HCH_TR_chol) # (L, *bs, N_ensem, x_dim) This might be more stable!
-                    X_track[j_start:j] = XS
-                    if save_intermediate_step:
-                        n_start_im = round(((t_start - t0)/step_size).item())
-                        XS = X_intermediate[n_start_im:n_cur]
-                        XS_m = XS.mean(dim=-2, keepdim=True) # (L, *bs, 1, x_dim)
-                        CSH_T = 1/(N_ensem-1) * (XS - XS_m).transpose(-1, -2) @ (HX - HX_m) # (L, *bs, x_dim, y_dim)
-                        XS = XS + pre @ CSH_T.transpose(-1, -2) # (L, *bs, N_ensem, x_dim)
-                        X_intermediate[n_start_im:n_cur] = XS
+        if save_filter_step and smooth_lag > 0:
+            with torch.no_grad():
+                t_start = torch.max(t_cur - smooth_lag, torch.tensor(t0))
+                j_start = torch.argmax((t_obs>=t_start).type(torch.uint8)) # e.g., t_obs[5] = 0.5, t_obs[4]=0.4, smooth_lag=0.1 --> j_start = 4
+                XS = X_track[j_start:j] # (L, *bs, N_ensem, x_dim)
+                XS_m = XS.mean(dim=-2, keepdim=True) # (L, *bs, 1, x_dim)
+                CSH_T = 1/(N_ensem-1) * (XS - XS_m).transpose(-1, -2) @ (HX - HX_m) # (L, *bs, x_dim, y_dim)
+                XS = XS + pre @ CSH_T.transpose(-1, -2)
+                X_track[j_start:j] = XS
 
-
-        elif simulation_type == 1:
-            HX = obs_func_j(X)   # (*bs, N_ensem, y_dim)
-            HX_m = HX.mean(dim=-2).unsqueeze(-2)  # (*bs, 1, y_dim)
-            HX_ct = HX - HX_m
-            C_uw = 1/(N_ensem-1) * X_ct.transpose(-1, -2) @ HX_ct  # (*bs, x_dim, y_dim)
-            C_ww = 1/(N_ensem-1) * HX_ct.transpose(-1, -2) @ HX_ct  # (*bs, y_dim, y_dim)
-            C_ww_R_chol = torch.linalg.cholesky(C_ww + noise_R) # (*bs, y_dim, y_dim), lower-tril
-            pre = (obs_perturb - HX) @ torch.cholesky_inverse(C_ww_R_chol) # (*bs, N_ensem, y_dim)
-            if compute_likelihood and j >= likelihood_warmup:
-                d = torch.distributions.MultivariateNormal(HX_m.squeeze(-2), scale_tril=C_ww_R_chol)  # (*bs, y_dim) and (*bs, y_dim, y_dim)
-                neg_log_likelihood += d.log_prob(y_obs_j.squeeze(-2)) # (*bs)
-            X = X + pre @ C_uw.transpose(-1, -2)  # (*bs, N_ensem, x_dim)
-            ########### TODO: Smoothing ##############
         if save_filter_step:
             X_track[j+1] = X.detach()
-        if save_intermediate_step:
-            X_intermediate[n_cur] = X.detach().clone()
+
     if not save_first:
         X_track = X_track[1:]
-    return X, X_track, X_intermediate, neg_log_likelihood
+    return X, X_track, log_likelihood
 
 
 def KF(ode_func, obs_func, t_obs, y_obs, init_m, init_C_param, model_Q_param, noise_R_param, device, compute_likelihood=False, save_first=False, time_varying_obs=False, **unused_kwargs):
@@ -215,7 +173,7 @@ def KF(ode_func, obs_func, t_obs, y_obs, init_m, init_C_param, model_Q_param, no
 
     Returns:
         mu_track, C_track: Filtered states at time t_obs. # (n_obs, *bs, x_dim), (n_obs, *bs, x_dim, x_dim)
-        neg_log_likelihood: Negative log likelihood # (*bs)
+        log_likelihood: Negative log likelihood # (*bs)
     """
     # if not isinstance(ode_func, NNModel.Linear_ODE) and not isinstance(obs_func, NNModel.Linear):
     #   raise ValueError('Please ensure that both dynamic and observation models are linear.')
@@ -227,7 +185,7 @@ def KF(ode_func, obs_func, t_obs, y_obs, init_m, init_C_param, model_Q_param, no
     n_obs = y_obs.shape[0]
     bs = y_obs.shape[1:-1]
 
-    neg_log_likelihood = torch.zeros(bs, device=device) if compute_likelihood else None  # (*bs),  tensor(0.) if no batch dimension
+    log_likelihood = torch.zeros(bs, device=device) if compute_likelihood else None  # (*bs),  tensor(0.) if no batch dimension
 
     m_track = torch.empty(n_obs+1, *bs, x_dim, dtype=init_m.dtype, device=device) # (n_obs, *bs, x_dim)
     C_track = torch.empty(n_obs+1, *bs, x_dim, x_dim, dtype=init_m.dtype, device=device) # (n_obs, *bs, x_dim, x_dim)
@@ -258,7 +216,7 @@ def KF(ode_func, obs_func, t_obs, y_obs, init_m, init_C_param, model_Q_param, no
         K_T = torch.cholesky_inverse(HCH_TR_chol) @ HC # (*bs, y_dim, x_dim)
         if compute_likelihood:
             d = torch.distributions.MultivariateNormal(HX.squeeze(-2), scale_tril=HCH_TR_chol)
-            neg_log_likelihood += d.log_prob(y_obs_j.squeeze(-2)) # (*bs)
+            log_likelihood += d.log_prob(y_obs_j.squeeze(-2)) # (*bs)
         m = m + ((y_obs_j - HX) @ K_T).squeeze(-2) # (*bs, x_dim)
         C = C @ (torch.eye(x_dim, device=device) - H.t() @ K_T) # (*bs, x_dim, x_dim)
         ########### TODO: Smoothing ##############
@@ -268,7 +226,7 @@ def KF(ode_func, obs_func, t_obs, y_obs, init_m, init_C_param, model_Q_param, no
     if not save_first:
         m_track = m_track[1:]
         C_track = C_track[1:]
-    return m_track, C_track, Cf_track, neg_log_likelihood
+    return m_track, C_track, Cf_track, log_likelihood
 
 def BootstrapPF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_Q_param, noise_R_param, device, proposal='bootstrap', proposal_param=None, init_w=None, init_X=None, detach_every=None,
                                                 ode_method='rk4', ode_options=None, adjoint=False, adjoint_method=None, adjoint_options=None, save_intermediate_step=False,
@@ -289,7 +247,7 @@ def BootstrapPF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param,
 
     Returns:
         w_track, X_track: Filtered states at time t_obs. # (n_obs, *bs, N_ensem), (n_obs, *bs, N_ensem, x_dim)
-        neg_log_likelihood: Negative log likelihood # (*bs)
+        log_likelihood: Negative log likelihood # (*bs)
     """
     if save_intermediate_step and 'step_size' not in ode_options:
         raise ValueError('Specify step size first to save intermediate steps.')
@@ -301,7 +259,7 @@ def BootstrapPF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param,
     n_obs = y_obs.shape[0]
     bs = y_obs.shape[1:-1]
 
-    neg_log_likelihood = torch.zeros(bs, device=device) if compute_likelihood else None  # (*bs),  tensor(0.) if no batch dimension
+    log_likelihood = torch.zeros(bs, device=device) if compute_likelihood else None  # (*bs),  tensor(0.) if no batch dimension
 
     w_track = torch.empty(n_obs+1, *bs, N_ensem, device=device) # (n_obs+1, *bs, N_ensem)
     X_track = torch.empty(n_obs+1, *bs, N_ensem, x_dim, dtype=init_m.dtype, device=device) # (n_obs+1, *bs, N_ensem, x_dim)
@@ -411,7 +369,7 @@ def BootstrapPF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param,
 
         w = torch.nn.functional.softmax(logits, dim=-1) # (*bs, N_ensem)
         if compute_likelihood:
-            neg_log_likelihood += torch.logsumexp(logits, dim=-1) # (*bs)
+            log_likelihood += torch.logsumexp(logits, dim=-1) # (*bs)
 
         X_track[j+1] = X.detach().clone()
         w_track[j+1] = w.detach().clone()
@@ -439,8 +397,8 @@ def BootstrapPF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param,
         X_track = X_track[1:]
         w_track = w_track[1:]
     # if tbptt is not None:
-    #   neg_log_likelihood = neg_log_likelihood_out
-    return X, w, X_track, X_intermediate, w_track, w_intermediate, neg_log_likelihood
+    #   log_likelihood = log_likelihood_out
+    return X, w, X_track, X_intermediate, w_track, w_intermediate, log_likelihood
 
 
 

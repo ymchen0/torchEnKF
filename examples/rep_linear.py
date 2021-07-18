@@ -1,6 +1,5 @@
 import utils
 from core_training import train_loop_diff, train_loop_em_new
-from viz_loss import loss_grad_vis_1d, loss_grad_vis_2d
 # from tqdm import tqdm
 from tqdm.auto import tqdm
 
