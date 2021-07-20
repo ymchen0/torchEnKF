@@ -88,7 +88,7 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
 
     t_cur = t0
 
-    pbar = tqdm(range(n_obs), leave=False) if tqdm is not None else range(n_obs)
+    pbar = tqdm(range(n_obs), desc="Running EnKF", leave=False) if tqdm is not None else range(n_obs)
     for j in pbar:
         ################ Forecast step ##################
         if adjoint:

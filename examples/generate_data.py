@@ -46,7 +46,7 @@ def generate(ode_func, obs_func, t_obs, x0, model_Q_param, noise_R_param, device
 
     t_cur = t0
 
-    pbar = tqdm(range(n_obs), leave=False) if tqdm is not None else range(n_obs)
+    pbar = tqdm(range(n_obs), desc="Generating data", leave=True) if tqdm is not None else range(n_obs)
     for j in pbar:
         _, X = odeint(ode_func, X, torch.tensor([t_cur, t_obs[j]], device=device), method=ode_method, options=ode_options)
         t_cur = t_obs[j]
