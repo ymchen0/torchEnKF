@@ -115,35 +115,43 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
 
         C_uu = 1/(N_ensem-1) * X_ct.transpose(-1, -2) @ X_ct  # (*bs, x_dim, x_dim). Note: It can be made memory-efficient by not computing this explicity. See discussion in paper.
 
-        if localization_radius is not None:
-            C_uu = taper * C_uu
-
         if linear_obs:
-            H = obs_func_j.H # (y_dim, x_dim)
-        else: # Compute Jacobian of h evaluated at the ensemble mean
-            H_vec = torch.autograd.functional.jacobian(obs_func_j, X_m.view(-1, x_dim), create_graph=False, strict=False, vectorize=True) # (bs_mul, y_dim, bs_mul, x_dim)
-            H = H_vec.diagonal(dim1=0, dim2=2).permute(2, 0, 1).view(*bs, y_dim, x_dim) # (*bs, y_dim, x_dim)   see https://discuss.pytorch.org/t/jacobian-functional-api-batch-respecting-jacobian/84571
-        HX = X @ H.transpose(-1, -2) # (*bs, N_ensem, y_dim)
-        HX_m = X_m @ H.transpose(-1, -2) # (*bs, 1, y_dim)
-        HC = H @ C_uu # (*bs, y_dim, x_dim)
-        HCH_T = HC @ H.transpose(-1, -2) # (*bs, y_dim, y_dim)
-        HCH_TR_chol = torch.linalg.cholesky(HCH_T + noise_R) # (*bs, y_dim, y_dim), lower-tril
-        if compute_likelihood: 
-            d = torch.distributions.MultivariateNormal(HX_m.squeeze(-2), scale_tril=HCH_TR_chol) # (*bs, y_dim) and (*bs, y_dim, y_dim)
-            log_likelihood += d.log_prob(y_obs_j.squeeze(-2)) # (*bs)
-        pre = (obs_perturb - HX) @ torch.cholesky_inverse(HCH_TR_chol) # (*bs, N_ensem, y_dim)
-        X = X + pre @ HC # (*bs, N_ensem, x_dim)
+            H = obs_func_j.H  # (y_dim, x_dim)
+            if localization_radius is not None:
+                C_uu = taper * C_uu
+            HX = X @ H.transpose(-1, -2) # (*bs, N_ensem, y_dim)
+            HX_m = X_m @ H.transpose(-1, -2) # (*bs, 1, y_dim)
+            HC = H @ C_uu # (*bs, y_dim, x_dim)
+            HCH_T = HC @ H.transpose(-1, -2) # (*bs, y_dim, y_dim)
+            HCH_TR_chol = torch.linalg.cholesky(HCH_T + noise_R) # (*bs, y_dim, y_dim), lower-tril
+            if compute_likelihood:
+                d = torch.distributions.MultivariateNormal(HX_m.squeeze(-2), scale_tril=HCH_TR_chol) # (*bs, y_dim) and (*bs, y_dim, y_dim)
+                log_likelihood += d.log_prob(y_obs_j.squeeze(-2)) # (*bs)
+            pre = (obs_perturb - HX) @ torch.cholesky_inverse(HCH_TR_chol) # (*bs, N_ensem, y_dim)
+            X = X + pre @ HC # (*bs, N_ensem, x_dim)
 
 
-        if save_filter_step and smooth_lag > 0:
-            with torch.no_grad():
-                t_start = torch.max(t_cur - smooth_lag, torch.tensor(t0))
-                j_start = torch.argmax((t_obs>=t_start).type(torch.uint8)) # e.g., t_obs[5] = 0.5, t_obs[4]=0.4, smooth_lag=0.1 --> j_start = 4
-                XS = X_track[j_start:j] # (L, *bs, N_ensem, x_dim)
-                XS_m = XS.mean(dim=-2, keepdim=True) # (L, *bs, 1, x_dim)
-                CSH_T = 1/(N_ensem-1) * (XS - XS_m).transpose(-1, -2) @ (HX - HX_m) # (L, *bs, x_dim, y_dim)
-                XS = XS + pre @ CSH_T.transpose(-1, -2)
-                X_track[j_start:j] = XS
+            if save_filter_step and smooth_lag > 0:
+                with torch.no_grad():
+                    t_start = torch.max(t_cur - smooth_lag, torch.tensor(t0))
+                    j_start = torch.argmax((t_obs>=t_start).type(torch.uint8)) # e.g., t_obs[5] = 0.5, t_obs[4]=0.4, smooth_lag=0.1 --> j_start = 4
+                    XS = X_track[j_start:j] # (L, *bs, N_ensem, x_dim)
+                    XS_m = XS.mean(dim=-2, keepdim=True) # (L, *bs, 1, x_dim)
+                    CSH_T = 1/(N_ensem-1) * (XS - XS_m).transpose(-1, -2) @ (HX - HX_m) # (L, *bs, x_dim, y_dim)
+                    XS = XS + pre @ CSH_T.transpose(-1, -2)
+                    X_track[j_start:j] = XS
+        else:
+            HX = obs_func_j(X)  # (*bs, N_ensem, y_dim)
+            HX_m = HX.mean(dim=-2).unsqueeze(-2)  # (*bs, 1, y_dim)
+            HX_ct = HX - HX_m
+            C_uw = 1 / (N_ensem - 1) * X_ct.transpose(-1, -2) @ HX_ct  # (*bs, x_dim, y_dim)
+            C_ww = 1 / (N_ensem - 1) * HX_ct.transpose(-1, -2) @ HX_ct  # (*bs, y_dim, y_dim)
+            C_ww_R_chol = torch.linalg.cholesky(C_ww + noise_R)  # (*bs, y_dim, y_dim), lower-tril
+            pre = (obs_perturb - HX) @ torch.cholesky_inverse(C_ww_R_chol)  # (*bs, N_ensem, y_dim)
+            if compute_likelihood:
+                d = torch.distributions.MultivariateNormal(HX_m.squeeze(-2), scale_tril=C_ww_R_chol)  # (*bs, y_dim) and (*bs, y_dim, y_dim)
+                log_likelihood += d.log_prob(y_obs_j.squeeze(-2))  # (*bs)
+            X = X + pre @ C_uw.transpose(-1, -2)  # (*bs, N_ensem, x_dim)\
 
         if save_filter_step:
             X_track[j+1] = X.detach()

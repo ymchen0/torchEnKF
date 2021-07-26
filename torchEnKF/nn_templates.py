@@ -265,30 +265,33 @@ class Lorenz96_dict_param(nn.Module):
     out = torch.stack(to_cat, dim=-1) @ self.coeff  # (*bs, x_dim, N_a) @ (N_a)  -> (*bs, x_dim)
     return out
 
+
 class Lorenz96_FS(nn.Module):
   def __init__(self, param, device, xx_dim=36, xy_dim=10):
     super().__init__()
     self.param = nn.Parameter(param)
-    
+
     self.xx_dim = xx_dim
     self.xy_dim = xy_dim
     self.x_dim = xx_dim * (xy_dim + 1)
 
     self.indices_x = torch.tensor([i for i in range(xx_dim)], dtype=torch.long)
-    self.indices_x_p1 = torch.tensor([(i+1)%self.xx_dim for i in range(xx_dim)], dtype=torch.long, device=device)
-    self.indices_x_m2 = torch.tensor([(i-2)%self.xx_dim for i in range(xx_dim)], dtype=torch.long, device=device)
-    self.indices_x_m1 = torch.tensor([(i-1)%self.xx_dim for i in range(xx_dim)], dtype=torch.long, device=device)
-    self.indices_y_p1 = torch.tensor([(i+1)%self.xy_dim for i in range(xy_dim)], dtype=torch.long, device=device)
-    self.indices_y_p2 = torch.tensor([(i+2)%self.xy_dim for i in range(xy_dim)], dtype=torch.long, device=device)
-    self.indices_y_m1 = torch.tensor([(i-1)%self.xy_dim for i in range(xy_dim)], dtype=torch.long, device=device)
-  
+    self.indices_x_p1 = torch.tensor([(i + 1) % self.xx_dim for i in range(xx_dim)], dtype=torch.long, device=device)
+    self.indices_x_m2 = torch.tensor([(i - 2) % self.xx_dim for i in range(xx_dim)], dtype=torch.long, device=device)
+    self.indices_x_m1 = torch.tensor([(i - 1) % self.xx_dim for i in range(xx_dim)], dtype=torch.long, device=device)
+    self.indices_y_p1 = torch.tensor([(i + 1) % self.xy_dim for i in range(xy_dim)], dtype=torch.long, device=device)
+    self.indices_y_p2 = torch.tensor([(i + 2) % self.xy_dim for i in range(xy_dim)], dtype=torch.long, device=device)
+    self.indices_y_m1 = torch.tensor([(i - 1) % self.xy_dim for i in range(xy_dim)], dtype=torch.long, device=device)
+
   def forward(self, t, u):
     # (*bs * x_dim) -> (*bs * x_dim)
+    bs = u.shape[:-1]
     F, h, c, b = self.param
     to_cat = []
-    u_y = u[..., self.xx_dim:].reshape(-1, self.xx_dim, self.xy_dim) # (*bs, xx_dim, xy_dim)
-    to_cat.append((u.index_select(-1, self.indices_x_p1) - u.index_select(-1, self.indices_x_m2)) * u.index_select(-1, self.indices_x_m1) - u[..., :self.xx_dim] + F - h * c * u_y.mean(dim=-1))
-    to_cat.append(c * (-b * u_y.index_select(-1, self.indices_y_p1) * (u_y.index_select(-1, self.indices_y_p2) - u_y.index_select(-1, self.indices_y_m1)) - u_y + h / self.xy_dim * u[..., :self.xx_dim].unsqueeze(-1)).view(-1, self.xx_dim * self.xy_dim))
+    u_y = u[..., self.xx_dim:].reshape(*bs, self.xx_dim, self.xy_dim)  # (*bs, xx_dim, xy_dim)
+    # print(u.index_select(-1, self.indices_x_p1).shape, u_y.mean(dim=-1).shape)
+    to_cat.append((u.index_select(-1, self.indices_x_p1) - u.index_select(-1, self.indices_x_m2)) * u.index_select(-1, self.indices_x_m1) - u[...,:self.xx_dim] + F - h * c * u_y.mean(dim=-1))
+    to_cat.append(c * (-b * u_y.index_select(-1, self.indices_y_p1) * (u_y.index_select(-1, self.indices_y_p2) - u_y.index_select(-1,self.indices_y_m1)) - u_y + h / self.xy_dim * u[...,:self.xx_dim].unsqueeze(-1)).view(*bs, self.xx_dim * self.xy_dim))
     out = torch.cat(to_cat, dim=-1)
     return out
 

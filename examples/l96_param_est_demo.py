@@ -12,7 +12,7 @@ import numpy as np
 from torchdiffeq import odeint
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-device="cpu"
+# device="cpu"
 print(f"device: {device}")
 
 
@@ -91,4 +91,4 @@ for epoch in tqdm(range(150), desc="Training", leave=False):
 
     if epoch % 5 == 0:
         tqdm.write(f"Epoch {epoch}, Training log-likelihood: {train_log_likelihood.mean().item()}")
-        tqdm.write(f"Learned coefficients: {learned_ode_func.coeff.data.numpy()}")
+        tqdm.write(f"Learned coefficients: {learned_ode_func.coeff.data.cpu().numpy()}")
