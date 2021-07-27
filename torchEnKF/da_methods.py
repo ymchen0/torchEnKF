@@ -85,16 +85,18 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
         X_track = torch.empty(n_obs+1, *bs, N_ensem, x_dim, dtype=init_m.dtype, device=device)
         X_track[0] = X.detach().clone()
 
+    step_size = ode_options['step_size']
 
     t_cur = t0
 
     pbar = tqdm(range(n_obs), desc="Running EnKF", leave=False) if tqdm is not None else range(n_obs)
     for j in pbar:
         ################ Forecast step ##################
+        n_intermediate_j = round(((t_obs[j] - t_cur) / step_size).item())
         if adjoint:
-            _, X = ode_integrator(ode_func, X, torch.tensor([t_cur, t_obs[j]], device=device), method=ode_method, options=ode_options, adjoint_method=adjoint_method, adjoint_options=adjoint_options, **ode_kwargs)
+            X = ode_integrator(ode_func, X, torch.linspace(t_cur, t_obs[j], n_intermediate_j + 1, device=device), method=ode_method, adjoint_method=adjoint_method, adjoint_options=adjoint_options, **ode_kwargs)[-1]
         else:
-            _, X = ode_integrator(ode_func, X, torch.tensor([t_cur, t_obs[j]], device=device), method=ode_method, options=ode_options, **ode_kwargs)
+            X = ode_integrator(ode_func, X, torch.linspace(t_cur, t_obs[j], n_intermediate_j + 1, device=device), method=ode_method, **ode_kwargs)[-1]
         t_cur = t_obs[j]
 
         if model_Q_param is not None:
