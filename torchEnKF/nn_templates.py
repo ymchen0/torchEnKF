@@ -198,8 +198,9 @@ class Lorenz96(nn.Module):
     return out
 
 class Lorenz96_correction(nn.Module):
-  def __init__(self, coeff, device, x_dim=40):
+  def __init__(self, coeff, x_dim=40):
     super().__init__()
+    device = coeff.device
     self.coeff = coeff
     self.x_dim = x_dim
     self.indices_p1 = torch.tensor([(i+1)%self.x_dim for i in range(x_dim)], dtype=torch.long, device=device)
