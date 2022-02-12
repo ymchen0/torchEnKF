@@ -9,6 +9,7 @@ from examples import generate_data, utils
 import random
 import torch
 import numpy as np
+
 from torchdiffeq import odeint
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -42,7 +43,7 @@ with torch.no_grad():
 ######### Generate training data from the reference model #########
 t0 = 0.
 t_obs_step = 0.1
-n_obs = 10
+n_obs = 100
 t_obs = t_obs_step * torch.arange(1, n_obs+1).to(device)
 model_Q_true = None  # No noise in dynamics
 

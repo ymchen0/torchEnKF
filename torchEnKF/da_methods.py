@@ -96,7 +96,7 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
         if adjoint:
             X = ode_integrator(ode_func, X, torch.linspace(t_cur, t_obs[j], n_intermediate_j + 1, device=device), method=ode_method, adjoint_method=adjoint_method, adjoint_options=adjoint_options, **ode_kwargs)[-1]
         else:
-            X = ode_integrator(ode_func, X, torch.linspace(t_cur, t_obs[j], n_intermediate_j + 1, device=device), method=ode_method, **ode_kwargs)[-1]
+            X = ode_integrator(ode_func, X, torch.linspace(t_cur, t_obs[j], n_intermediate_j + 1, device=device), method=ode_method,  **ode_kwargs)[-1]
         t_cur = t_obs[j]
 
         if model_Q_param is not None:

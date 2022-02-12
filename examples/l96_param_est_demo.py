@@ -9,6 +9,7 @@ from examples import generate_data, utils
 import random
 import torch
 import numpy as np
+import matplotlib.pyplot as plt
 from torchdiffeq import odeint
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -16,7 +17,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print(f"device: {device}")
 
 
-seed = 40
+seed = 42
 torch.manual_seed(seed)
 np.random.seed(seed)
 random.seed(seed)
@@ -66,6 +67,7 @@ lambda1 = lambda2 = lambda epoch: (epoch-9)**(-0.5) if epoch >=10 else 1
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=[lambda1, lambda2])
 L = 20 # subsequence length in AD-EnKF-T
 warm_up = 0
+monitor = []
 for epoch in tqdm(range(150), desc="Training", leave=False):
     train_log_likelihood = torch.zeros(train_size, device=device)
     t_start = t0
@@ -92,3 +94,24 @@ for epoch in tqdm(range(150), desc="Training", leave=False):
     if epoch % 5 == 0:
         tqdm.write(f"Epoch {epoch}, Training log-likelihood: {train_log_likelihood.mean().item()}")
         tqdm.write(f"Learned coefficients: {learned_ode_func.coeff.data.cpu().numpy()}")
+
+    with torch.no_grad():
+        q_scale = torch.sqrt(torch.trace(learned_model_Q.full())/x_dim)
+        curr_output = learned_ode_func.coeff.tolist() + [q_scale.item()] + [train_log_likelihood.mean().item()]
+        monitor.append(curr_output)
+
+# Reproducing Figure 6, EnKF results
+monitor = np.asarray(monitor)
+fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+for i in range(18):
+    if i in {0,3,11,16}:
+        axes[0,0].plot(monitor[:,i])
+    else:
+        axes[0,1].plot(monitor[:,i])
+axes[1,0].plot(monitor[:,-2])
+axes[1,1].plot(monitor[:,-1])
+axes[0,0].set_ylabel("Coefficients, non-zero entries")
+axes[0,1].set_ylabel("Coefficients, zero entries")
+axes[1,0].set_ylabel("Error level")
+axes[1,1].set_ylabel("Training log-likelihood")
+plt.show()
