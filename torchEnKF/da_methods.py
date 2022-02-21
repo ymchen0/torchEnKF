@@ -32,10 +32,11 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
     Key args:
         ode_func (torch.nn.Module): Vector field f(t,x)
                 Tip: Wrap all parameters of interest that you want to evaluate gradient by torch.nn.Parameter()
+                NOTE: This implicitly assume the underlying latent model is an ODE. For generic type of latent evolutions x_{t+1}=F(x_t), slight modifications of the forcast step are required.
         obs_func (torch.nn.Module): Observation model h(x), assumed to be linear h(x) = Hx.
                 If time varying_obs==True, can take a list of torch.nn.Module's
-        t_obs (tensor): 1D-Tensor of shape (n_obs,). Time points where observations are available
-                This does NOT need to be time-uniform. By default, t0 is NOT included.
+        t_obs (tensor): 1D-Tensor of shape (n_obs,). Time points where observations are available.
+                This does NOT need to be time-uniform. By default, t0 is NOT included. Must be monotonic increasing.
         y_obs (tensor): Tensor of shape (n_obs, *bs, y_dim). Observed values at t_obs.
                 '*bs' can be arbitrary batch dimension (or empty).
                 Observations are assumed to have the same dimension 'y_dim'. However, observation model can be time-varying.
@@ -48,14 +49,27 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
     Optional args:
         init_X (tensor): Tensor of shape (*bs, N_ensem, x_dim). Initial ensemble if pre-specified.
         ode_method: Numerical scheme for forward equation. We use 'euler' or 'rk4'. Other solvers are available. See https://github.com/rtqichen/torchdiffeq
-        ode_options: Set it to dict(step_size=...) for fixed step solvers. Adaptive solvers are also available - see the link above.
+        ode_options: Set it to dict(step_size=...) for fixed step solvers for the forward equation. Adaptive solvers are also available - see the link above.
         adjoint (bool): Whether to compute gradient via adjoint equation or direct backpropagation through the solver.
         adjoint_method: Numerical scheme for adjoint equation if adjoint==True.
+        adjoint options: Set it to dict(step_size=...) for fixed step solvers for the adjoint equation. Adaptive solvers are also available - see the link above.
         ode_kwargs: additional kwargs for neuralODE.
+        save_filter_step: If set to True, trajectories of ensemble across t_obs will be saved.
+                            If set to False, only the up-to-date ensemble will be saved.
         smooth_lag: Length of smoothing time interval.
                 This is NOT needed for AD-EnKF, but might be needed for Expectation-Maximization.
+        t0: The timestamp at which the ensemble is initialized.
+            By default, we DO NOT assume observation is available at t0. Slight modifications of the code are needed to handle this situation.
         var_inflation: See discussion in paper. Typical value is between 1 and 1.1. None by default.
         localization_radius: See discussion in paper. Typical value is 5. None by default.
+        compute_likelihood: Whether to compute data log-likelihood in the filtering process.
+                            Must be set to True for AD-EnKF.
+        linear_obs: If set to True, then obs_func must be 'nn_templates.Linear' class. The observation model is y = Hx + noise where H is a matrix.
+                    If set to False, then obs_func can be any differentiable function/module in PyTorch. The observation model is y = obs_func(x) + noise
+        time_varying_obs: If set to False, the observation model is time-invariant. A single nn.Module/function is sufficient for the obs_func argument.
+                        If set to True, the observation model can be different across time. A list of nn.Module/functions is needed for obs_func argument and has the same length as t_obs.
+        save_first: Set it to True to save the initial ensemble.
+        tqdm: Set it to True to use the tqdm format for presenting.
 
     Returns:
         X (tensor): Tensor of shape (*bs, N_ensem, x_dim). Final ensemble.
@@ -69,6 +83,11 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
     y_dim = y_obs.shape[-1]
     n_obs = y_obs.shape[0]
     bs = y_obs.shape[1:-1]  
+
+    if ode_options is None:
+        if n_obs > 0:
+            step_size = (t_obs[1:] - t_obs[:-1]).min()  # This computes the minimum length of time intervals in t_obs. However it's more preferred to manually provide a quantity for the step_size to avoid issues like non-divisibility.
+            ode_options = dict(step_size=step_size)
 
     log_likelihood = torch.zeros(bs, device=device) if compute_likelihood else None  # (*bs),  tensor(0.) if no batch dimension
 

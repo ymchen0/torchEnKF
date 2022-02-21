@@ -58,7 +58,7 @@ N_ensem = 50
 init_m = torch.zeros(x_dim, device=device)
 init_C_param = noise.AddGaussian(x_dim, 50 * torch.eye(x_dim), 'full').to(device)
 X, X_track, log_likelihood = da_methods.EnKF(true_ode_func,true_obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_Q_true, noise_R_true,device,
-                                             ode_options=dict(step_size=0.01), adjoint_options=dict(step_size=0.05), localization_radius=5, tqdm=tqdm)
+                                              localization_radius=5, tqdm=tqdm)
 print(f"log-likelihood estimate: {log_likelihood}")
 burn_in = n_obs // 5
 print(f"Filter accuracy (RMSE): {torch.sqrt(utils.mse_loss(X_track.mean(dim=-2)[burn_in:], x_truth[burn_in:]))}")

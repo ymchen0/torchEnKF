@@ -66,21 +66,14 @@ optimizer = torch.optim.Adam([{'params':learned_ode_func.parameters(), 'lr':1e-1
 lambda1 = lambda2 = lambda epoch: (epoch-9)**(-0.5) if epoch >=10 else 1
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=[lambda1, lambda2])
 L = 20 # subsequence length in AD-EnKF-T
-warm_up = 0
 monitor = []
 for epoch in tqdm(range(150), desc="Training", leave=False):
     train_log_likelihood = torch.zeros(train_size, device=device)
     t_start = t0
     X = init_C_param(init_m.expand(train_size, N_ensem, x_dim))
 
-    # Warm-up phase. Time interval at the beginning that the gradients will not be recorded. But the filtered states will. (This is not presented in paper)
-    with torch.no_grad():
-        X, X_track, log_likelihood = da_methods.EnKF(learned_ode_func, true_obs_func, t_obs[:warm_up], y_obs[:warm_up], N_ensem, init_m, init_C_param, learned_model_Q, noise_R_true, device,
-                                                     t0=t_start, init_X=X, ode_options=dict(step_size=0.01), adjoint_options=dict(step_size=0.05), localization_radius=5, tqdm=None)
-        train_log_likelihood += log_likelihood
-    t_start = t_obs[warm_up - 1] if warm_up >= 1 else t0
-
-    for start in range(warm_up, n_obs, L):
+    # Training phase
+    for start in range(0, n_obs, L):
         optimizer.zero_grad()
         end = min(start + L, n_obs)
         X, X_track, log_likelihood = da_methods.EnKF(learned_ode_func,true_obs_func, t_obs[start:end], y_obs[start:end], N_ensem, init_m, init_C_param, learned_model_Q, noise_R_true,device,
@@ -91,10 +84,10 @@ for epoch in tqdm(range(150), desc="Training", leave=False):
         optimizer.step()
     scheduler.step()
 
+    # Printing
     if epoch % 5 == 0:
         tqdm.write(f"Epoch {epoch}, Training log-likelihood: {train_log_likelihood.mean().item()}")
         tqdm.write(f"Learned coefficients: {learned_ode_func.coeff.data.cpu().numpy()}")
-
     with torch.no_grad():
         q_scale = torch.sqrt(torch.trace(learned_model_Q.full())/x_dim)
         curr_output = learned_ode_func.coeff.tolist() + [q_scale.item()] + [train_log_likelihood.mean().item()]

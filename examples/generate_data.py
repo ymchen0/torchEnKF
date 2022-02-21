@@ -4,6 +4,9 @@ from torchEnKF import nn_templates
 from torchdiffeq import odeint_adjoint
 from torchdiffeq import odeint
 from tqdm import tqdm
+import os
+import sys
+sys.path.append(os.getcwd()) # Fix Python path
 
 
 def generate(ode_func, obs_func, t_obs, x0, model_Q_param, noise_R_param, device,
