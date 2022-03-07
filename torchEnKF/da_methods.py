@@ -69,7 +69,7 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
         time_varying_obs: If set to False, the observation model is time-invariant. A single nn.Module/function is sufficient for the obs_func argument.
                         If set to True, the observation model can be different across time. A list of nn.Module/functions is needed for obs_func argument and has the same length as t_obs.
         save_first: Set it to True to save the initial ensemble.
-        tqdm: Set it to True to use the tqdm format for presenting.
+        tqdm: Set tqdm=tqdm to use the tqdm format for presenting.
 
     Returns:
         X (tensor): Tensor of shape (*bs, N_ensem, x_dim). Final ensemble.
@@ -177,7 +177,7 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
         if save_filter_step:
             X_track[j+1] = X.detach()
 
-    if not save_first:
+    if save_filter_step and not save_first:
         X_track = X_track[1:]
     return X, X_track, log_likelihood
 
