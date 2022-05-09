@@ -93,16 +93,16 @@ for epoch in tqdm(range(100), desc="Training", leave=False):
 
     # Warm-up phase. Time interval at the beginning that the gradients will not be recorded. But the filtered states will. (This is not presented in paper)
     with torch.no_grad():
-        X, X_track, log_likelihood = da_methods.EnKF(learned_ode_func, true_obs_func, t_obs[:warm_up], y_obs[:warm_up], N_ensem, init_m, init_C_param, learned_model_Q, noise_R_true, device,
-                                                     t0=t_start, init_X=X, ode_options=dict(step_size=0.0025), adjoint_options=dict(step_size=0.01), linear_obs=False)
+        X, res, log_likelihood = da_methods.EnKF(learned_ode_func, true_obs_func, t_obs[:warm_up], y_obs[:warm_up], N_ensem, init_m, init_C_param, learned_model_Q, noise_R_true, device,
+                                                     save_filter_step={}, t0=t_start, init_X=X, ode_options=dict(step_size=0.0025), adjoint_options=dict(step_size=0.01), linear_obs=False)
         train_log_likelihood += log_likelihood
     t_start = t_obs[warm_up - 1] if warm_up >= 1 else t0
 
     for start in range(warm_up, n_obs, L):
         optimizer.zero_grad()
         end = min(start + L, n_obs)
-        X, X_track, log_likelihood = da_methods.EnKF(learned_ode_func,true_obs_func, t_obs[start:end], y_obs[start:end], N_ensem, init_m, init_C_param, learned_model_Q, noise_R_true,device,
-                                             t0=t_start, init_X=X, ode_options=dict(step_size=0.0025), adjoint_options=dict(step_size=0.01), linear_obs=False)
+        X, res, log_likelihood = da_methods.EnKF(learned_ode_func,true_obs_func, t_obs[start:end], y_obs[start:end], N_ensem, init_m, init_C_param, learned_model_Q, noise_R_true,device,
+                                             save_filter_step={}, t0=t_start, init_X=X, ode_options=dict(step_size=0.0025), adjoint_options=dict(step_size=0.01), linear_obs=False)
         t_start = t_obs[end - 1]
         (-log_likelihood).mean().backward()
         train_log_likelihood += log_likelihood.detach().clone()

@@ -93,12 +93,12 @@ for epoch in tqdm(range(50), desc="Training", leave=False):
     for start in range(0, n_obs, L):
         optimizer.zero_grad()
         end = min(start + L, n_obs)
-        X, X_track, log_likelihood = da_methods.EnKF(learned_ode_func,true_obs_func, t_obs[start:end], y_obs_train[start:end], N_ensem, init_m, init_C_param, learned_model_Q, noise_R_true,device,
-                                             t0=t_start, init_X=X, ode_options=dict(step_size=0.01), adjoint_options=dict(step_size=0.05), localization_radius=5, tqdm=None)
+        X, res, log_likelihood = da_methods.EnKF(learned_ode_func,true_obs_func, t_obs[start:end], y_obs_train[start:end], N_ensem, init_m, init_C_param, learned_model_Q, noise_R_true,device,
+                                             save_filter_step={'mean'}, t0=t_start, init_X=X, ode_options=dict(step_size=0.01), adjoint_options=dict(step_size=0.05), localization_radius=5, tqdm=None)
         t_start = t_obs[end - 1]
         (-log_likelihood).mean().backward()
         train_log_likelihood += log_likelihood.detach().clone()
-        train_state_est_loss += utils.mse_loss(X_track.mean(dim=-2), x_truth_train[start:end]) * (end-start)
+        train_state_est_loss += utils.mse_loss(res['mean'], x_truth_train[start:end]) * (end-start)
         optimizer.step()
     scheduler.step()
 
@@ -106,7 +106,7 @@ for epoch in tqdm(range(50), desc="Training", leave=False):
     with torch.no_grad():
         filter_rmse = torch.sqrt(train_state_est_loss / n_obs)
         _, _, test_log_likelihood = da_methods.EnKF(learned_ode_func, true_obs_func, t_obs, y_obs_test, N_ensem, init_m, init_C_param, learned_model_Q, noise_R_true, device,
-                                                     ode_options=dict(step_size=0.01), adjoint_options=dict(step_size=0.05), localization_radius=5, tqdm=None)
+                                                     save_filter_step={}, ode_options=dict(step_size=0.01), adjoint_options=dict(step_size=0.05), localization_radius=5, tqdm=None)
         true_fc, _ = generate_data.generate(true_ode_func, None, torch.tensor([t_obs_step], device=device), x0_fc, None, None, device, ode_options=dict(step_size=0.01))
         fc, _ = generate_data.generate(learned_ode_func, None, torch.tensor([t_obs_step], device=device), x0_fc, None, None, device, ode_options=dict(step_size=0.01))
         forecast_rmse = torch.sqrt(utils.mse_loss(true_fc, fc))

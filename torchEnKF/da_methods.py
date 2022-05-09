@@ -3,6 +3,7 @@ import math
 from torchEnKF import misc
 from torchdiffeq import odeint_adjoint
 from torchdiffeq import odeint
+from torch.nn.functional import normalize
 
 from tqdm import tqdm
 import time
@@ -22,8 +23,47 @@ def construct_Gaspari_Cohn(loc_radius, x_dim, device):
             taper[i, j] = G(dist/loc_radius)
     return taper
 
+def power_iter(A, n_iter=1):
+    device = A.device
+    u_shape = A[...,0:1].shape  # (*bs, N_ensem, 1)
+    v_shape = A[...,0:1,:].shape  # (*bs, 1, y_dim)
+    u = normalize(A.new_empty(u_shape).normal_(0, 1), dim=-2)  # (*bs, N_ensem, 1)
+    v = normalize(A.new_empty(v_shape).normal_(0, 1), dim=-1)  # (*bs, 1, y_dim)
+    for i in range(n_iter):
+        v = normalize(A.transpose(-1, -2) @ u, dim=-2) # (*bs, y_dim, 1)
+        u = normalize(A @ v, dim=-2) # (*bs, N_ensem, 1)
+        sigma = u.transpose(-1, -2) @ A @ v
+        # A = A / sigma
+        v = v.transpose(-1,-2) # (*bs, 1, y_dim)
+    return sigma
+
+def inv_logdet(v, Y_ct, R, R_inv, logdet_R):
+    # Returns matrix-vector product (Y Y^T + R)^{-1} times v for matrix Y=Y_ct and any choice of vector/matrix v. Also returns the log-determinant of (Y Y^T + R).
+    # Supports batch operation
+    # Y_ct: (*bs, N_ensem, y_dim), R: (y_dim, y_dim), v: (*bs, bs2, y_dim)
+    # out (invv): (*bs, bs2, y_dim)
+    device = Y_ct.device
+    N_ensem = Y_ct.shape[-2]
+    y_dim = Y_ct.shape[-1]
+    if N_ensem >= y_dim:
+        YYT_R = Y_ct.transpose(-1, -2) @ Y_ct + R
+        YYT_R_chol = torch.linalg.cholesky(YYT_R)
+        logdet = 2 * YYT_R_chol.diagonal(dim1=-2, dim2=-1).log().sum(-1)
+        invv = torch.cholesky_solve(v.transpose(-1,-2), YYT_R_chol).transpose(-1,-2)
+    else:
+        YTRinv = Y_ct @ R_inv  # (*bs, N_ensem, y_dim)
+        YTRinvv = YTRinv @ v.transpose(-1, -2)  # (*bs, N_ensem, bs2)
+        I_YTRinvY = torch.eye(N_ensem, device=device) + YTRinv @ Y_ct.transpose(-1, -2)  # (*bs, N_ensem, N_ensem)
+        sc = power_iter(I_YTRinvY,n_iter=1)
+        I_YTRinvY_sc = I_YTRinvY/sc
+        I_YTRinvY_chol_sc = torch.linalg.cholesky(I_YTRinvY_sc)  # (*bs, N_ensem, N_ensem)
+        I_YTRinvY_inv_YTRinvv = 1/sc * torch.cholesky_solve(YTRinvv, I_YTRinvY_chol_sc)   # (*bs, N_ensem, bs2)
+        invv = v @ R_inv - I_YTRinvY_inv_YTRinvv.transpose(-1,-2) @ YTRinv  # (*bs, bs2, y_dim)
+        logdet = y_dim * torch.log(sc).squeeze(-1).squeeze(-1) + 2 * I_YTRinvY_chol_sc.diagonal(dim1=-2, dim2=-1).log().sum(-1) + logdet_R
+    return invv, logdet  # (*bs, bs2, y_dim), (*bs)
+
 def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_Q_param, noise_R_param, device, 
-                    init_X=None, ode_method='rk4', ode_options=None, adjoint=True, adjoint_method='rk4', adjoint_options=None, save_filter_step=True,
+                    init_X=None, ode_method='rk4', ode_options=None, adjoint=True, adjoint_method='rk4', adjoint_options=None, save_filter_step={'mean'},
                     smooth_lag=0, t0=0., var_inflation=None, localization_radius=None, compute_likelihood=True, linear_obs=True, time_varying_obs=False,
                     save_first=False, tqdm=None, **ode_kwargs):
     """
@@ -54,10 +94,10 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
         adjoint_method: Numerical scheme for adjoint equation if adjoint==True.
         adjoint options: Set it to dict(step_size=...) for fixed step solvers for the adjoint equation. Adaptive solvers are also available - see the link above.
         ode_kwargs: additional kwargs for neuralODE.
-        save_filter_step: If set to True, trajectories of ensemble across t_obs will be saved.
-                            If set to False, only the up-to-date ensemble will be saved.
-        smooth_lag: Length of smoothing time interval.
-                This is NOT needed for AD-EnKF, but might be needed for Expectation-Maximization.
+        save_filter_step:
+            If contains 'mean', then particle means will be saved.
+            If contains 'particles', then all particles will be saved.
+            (Note: the up-to-date/final particles will always be returned seperately)
         t0: The timestamp at which the ensemble is initialized.
             By default, we DO NOT assume observation is available at t0. Slight modifications of the code are needed to handle this situation.
         var_inflation: See discussion in paper. Typical value is between 1 and 1.1. None by default.
@@ -73,6 +113,7 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
 
     Returns:
         X (tensor): Tensor of shape (*bs, N_ensem, x_dim). Final ensemble.
+        res (dict):
         X_track (tensor): Tensor of shape (n_obs, *bs, N_ensem, x_dim) if save_filter_step==True. Trajectories of ensemble across t_obs.
         log_likelihood (tensor): Log likelihood estimate # (*bs)
     """
@@ -91,7 +132,7 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
 
     log_likelihood = torch.zeros(bs, device=device) if compute_likelihood else None  # (*bs),  tensor(0.) if no batch dimension
 
-    if localization_radius is not None:
+    if linear_obs and localization_radius is not None:
         taper = construct_Gaspari_Cohn(localization_radius, x_dim, device)
 
     if init_X is not None:
@@ -99,10 +140,16 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
     else:
         X = init_C_param(init_m.expand(*bs, N_ensem, x_dim))
 
-    X_track = None
-    if save_filter_step:
-        X_track = torch.empty(n_obs+1, *bs, N_ensem, x_dim, dtype=init_m.dtype, device=device)
-        X_track[0] = X.detach().clone()
+
+    res = {}
+    if 'particles' in save_filter_step:
+        res['particles'] = torch.empty(n_obs + 1, *bs, N_ensem, x_dim, dtype=init_m.dtype, device=device)
+        res['particles'][0] = X
+    if 'mean' in save_filter_step:
+        X_m = X.mean(dim=-2)
+        res['mean'] = torch.empty(n_obs + 1, *bs, x_dim, dtype=init_m.dtype, device=device)
+        res['mean'][0] = X_m.detach()
+
 
     step_size = ode_options['step_size']
 
@@ -133,13 +180,15 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
         # Noise perturbation of observed data (key in stochastic EnKF)
         obs_perturb = noise_R_param(y_obs_j.expand(*bs, N_ensem, y_dim))
         noise_R = noise_R_param.full()
+        noise_R_inv = noise_R_param.inv()
+        logdet_noise_R = noise_R_param.logdet()
 
-        C_uu = 1/(N_ensem-1) * X_ct.transpose(-1, -2) @ X_ct  # (*bs, x_dim, x_dim). Note: It can be made memory-efficient by not computing this explicity. See discussion in paper.
 
-        if linear_obs:
+
+        if linear_obs and localization_radius is not None:
             H = obs_func_j.H  # (y_dim, x_dim)
-            if localization_radius is not None:
-                C_uu = taper * C_uu
+            C_uu = 1 / (N_ensem - 1) * X_ct.transpose(-1,-2) @ X_ct  # (*bs, x_dim, x_dim). Note: It can be made memory-efficient by not computing this explicity. See discussion in paper.
+            C_uu = taper * C_uu
             HX = X @ H.transpose(-1, -2) # (*bs, N_ensem, y_dim)
             HX_m = X_m @ H.transpose(-1, -2) # (*bs, 1, y_dim)
             HC = H @ C_uu # (*bs, y_dim, x_dim)
@@ -150,34 +199,30 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
                 log_likelihood += d.log_prob(y_obs_j.squeeze(-2)) # (*bs)
             pre = (obs_perturb - HX) @ torch.cholesky_inverse(HCH_TR_chol) # (*bs, N_ensem, y_dim)
             X = X + pre @ HC # (*bs, N_ensem, x_dim)
-
-
-            if save_filter_step and smooth_lag > 0:
-                with torch.no_grad():
-                    t_start = torch.max(t_cur - smooth_lag, torch.tensor(t0))
-                    j_start = torch.argmax((t_obs>=t_start).type(torch.uint8)) # e.g., t_obs[5] = 0.5, t_obs[4]=0.4, smooth_lag=0.1 --> j_start = 4
-                    XS = X_track[j_start:j] # (L, *bs, N_ensem, x_dim)
-                    XS_m = XS.mean(dim=-2, keepdim=True) # (L, *bs, 1, x_dim)
-                    CSH_T = 1/(N_ensem-1) * (XS - XS_m).transpose(-1, -2) @ (HX - HX_m) # (L, *bs, x_dim, y_dim)
-                    XS = XS + pre @ CSH_T.transpose(-1, -2)
-                    X_track[j_start:j] = XS
         else:
             HX = obs_func_j(X)  # (*bs, N_ensem, y_dim)
             HX_m = HX.mean(dim=-2).unsqueeze(-2)  # (*bs, 1, y_dim)
             HX_ct = HX - HX_m
-            C_uw = 1 / (N_ensem - 1) * X_ct.transpose(-1, -2) @ HX_ct  # (*bs, x_dim, y_dim)
-            C_ww = 1 / (N_ensem - 1) * HX_ct.transpose(-1, -2) @ HX_ct  # (*bs, y_dim, y_dim)
-            C_ww_R_chol = torch.linalg.cholesky(C_ww + noise_R)  # (*bs, y_dim, y_dim), lower-tril
-            pre = (obs_perturb - HX) @ torch.cholesky_inverse(C_ww_R_chol)  # (*bs, N_ensem, y_dim)
+            C_ww_sqrt = 1/math.sqrt(N_ensem-1) * HX_ct  # (*bs, N_ensem, y_dim)
+            v1 = obs_perturb - HX  # (*bs, N_ensem, y_dim)
+            v2 = y_obs_j - HX_m  # (*bs, 1, y_dim)
+            v = torch.cat((v1, v2), dim=-2)  # (*bs, N_ensem+1, y_dim)
+            C_ww_R_invv, C_ww_R_logdet = inv_logdet(v, C_ww_sqrt, noise_R, noise_R_inv, logdet_noise_R)  # (*bs, N_ensem+1, y_dim), (*bs)
+            pre = C_ww_R_invv[..., :N_ensem, :]  # (*bs, N_ensem, y_dim)  # (*bs, N_ensem, y_dim)
             if compute_likelihood:
-                d = torch.distributions.MultivariateNormal(HX_m.squeeze(-2), scale_tril=C_ww_R_chol)  # (*bs, y_dim) and (*bs, y_dim, y_dim)
-                log_likelihood += d.log_prob(y_obs_j.squeeze(-2))  # (*bs)
-            X = X + pre @ C_uw.transpose(-1, -2)  # (*bs, N_ensem, x_dim)\
+                part1 = -1 / 2 * (y_dim * math.log(2 * math.pi) + C_ww_R_logdet)  # (1,)
+                part2 = -1 / 2 * C_ww_R_invv[..., N_ensem:, :] @ (y_obs_j - HX_m).transpose(-1, -2)  # (*bs, 1, 1,)
+                log_likelihood += (part1 + part2.squeeze(-1).squeeze(-1))  # (*bs)
+            X = X + 1 / math.sqrt(N_ensem - 1) * (pre @ C_ww_sqrt.transpose(-1, -2)) @ X_ct  # (*bs, N_ensem, x_dim)
 
-        if save_filter_step:
-            X_track[j+1] = X.detach()
+        if 'particles' in save_filter_step:
+            res['particles'][j+1] = X
+        if 'mean' in save_filter_step:
+            X_m = X.mean(dim=-2)
+            res['mean'][j+1] = X_m.detach()
 
-    if save_filter_step and not save_first:
-        X_track = X_track[1:]
-    return X, X_track, log_likelihood
+    if not save_first:
+        for key in res.keys():
+            res[key] = res[key][1:]
+    return X, res, log_likelihood
 

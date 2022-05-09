@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torchEnKF import misc
+import math
 
 class AddGaussian(nn.Module):
     """
@@ -85,6 +86,26 @@ class AddGaussian(nn.Module):
         elif self.param_type == "full":
             return torch.linalg.cholesky(self.q)
 
+    def inv(self):
+        if self.param_type == "scalar":
+            return 1 / (self.post_process(self.q, self.param_type) ** 2) * torch.eye(self.x_dim,device=self.q.device)
+        elif self.param_type == "diag":
+            return 1 / (self.post_process(self.q, self.param_type) ** 2) * torch.eye(self.x_dim,device=self.q.device)
+        elif self.param_type == "tril":
+            return torch.cholesky_inverse(self.post_process(self.q, self.param_type))
+        elif self.param_type == "full":
+            return torch.cholesky_inverse(torch.linalg.cholesky(self.q))
+
+    def logdet(self):
+        if self.param_type == "scalar":
+            return 2 * self.x_dim * torch.log(self.post_process(self.q, self.param_type))
+        elif self.param_type == "diag":
+            return 2 * self.post_process(self.q, self.param_type).log().sum()
+        elif self.param_type == "tril":
+            return 2 * self.post_process(self.q, self.param_type).diagonal(dim1=-2,dim2=-1).log().sum(-1)
+        elif self.param_type == "full":
+            return 2 * torch.linalg.cholesky(self.q).diagonal(dim1=-2,dim2=-1).log().sum(-1)
+
     def full(self):
         chol = self.chol()
         return chol @ chol.t()
@@ -95,7 +116,6 @@ class AddGaussian(nn.Module):
     def post_grad(self):
         # Some pytorch tricks to compute d(loss)/d(q_true) where q_true = post_process(self.q)
         leaf = self.post_process(self.q, self.param_type).detach().requires_grad_()
-        q_sub = self.pre_process(leaf,
-                                 self.param_type)  # ideally should recover self.q, but we can compute d(q_sub)/d(leaf)
+        q_sub = self.pre_process(leaf,self.param_type)  # ideally should recover self.q, but we can compute d(q_sub)/d(leaf)
         q_sub.backward(gradient=self.q.grad)
         return leaf.grad
