@@ -114,7 +114,8 @@ def EnKF(ode_func, obs_func, t_obs, y_obs, N_ensem, init_m, init_C_param, model_
     Returns:
         X (tensor): Tensor of shape (*bs, N_ensem, x_dim). Final ensemble.
         res (dict):
-        X_track (tensor): Tensor of shape (n_obs, *bs, N_ensem, x_dim) if save_filter_step==True. Trajectories of ensemble across t_obs.
+            If save_filter_step contains 'mean', then res['mean'] will be tensor of shape (n_obs, *bs, x_dim)
+            If save_filter_step contains 'particles', then res['particles'] will be tensor of shape (n_obs, *bs, N_ensem, x_dim)
         log_likelihood (tensor): Log likelihood estimate # (*bs)
     """
 
